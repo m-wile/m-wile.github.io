@@ -3,13 +3,15 @@ project:
   output-dir: _site
 
 website:
-  title: "web"
+  title: "Matthew Wile"
   navbar:
     left:
       - href: index.qmd
         text: Home
       - href: QTP_Wile copy.qmd
         text: Quantitative Trading
+      - href: volatility trading copy.qmd
+        text: Volatility Trading
 
 format:
   html:
