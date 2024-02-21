@@ -10,7 +10,7 @@ website:
         text: Home
       - href: QTP_Wile copy.qmd
         text: Quantitative Trading
-      - href: volatility trading copy.qmd
+      - href: FaT_488_ProjectOne copy.qmd
         text: Volatility Trading
 
 format:
