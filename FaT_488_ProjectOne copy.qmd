@@ -1,0 +1,627 @@
+---
+title: "A Introduction To Trading Volatility"
+subtitle: "A Strategy On WTI Crude Oil Options"
+author: "Aditya Sharma and Matthew Wile"
+date: "`r Sys.Date()`"
+format: html
+editor: visual
+---
+
+```{r, include = FALSE}
+# Libraries
+library(tidyquant)
+library(dplyr)
+library(tidyr)
+library(RTL)
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(zoo)
+library(viridis)
+library(rugarch)
+library(PerformanceAnalytics)
+library(gganimate)
+library(gridExtra)
+library(cowplot)
+library(transformer)
+library(rugarch)
+library(fGarch)
+library(openxlsx)
+library(gt)
+library(gtExtras)
+
+# Usernames and Passwords 
+Morning_User = "risk@ualberta.ca"
+Morning_Password = "3J$yjsX*eU"
+EIAkey = "IxDjQdF1YyGFY2Jjefp1uNWmxDn6JGByDfBUj0Mq"
+
+# Warnings 
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen=999)
+```
+
+## The Theory
+
+Volatility is a statistical measure of the **dispersion** of data around its **mean** over a certain period of time
+
+In **financial markets**, volatility is the measure of **uncertainty**. Trading volatility is therefore trading uncertainty or in other words, generating signals to understand how uncertain a market is verse how much uncertainty the market is pricing in
+
+Anytime we read the word volatility, the immediate trigger in the mind should be uncertainty. The **most basic foundational** point then is as follows:
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+volatile_data <- data.frame(
+  Price = c(3, 10, 2, 8, 4, 10, 3), 
+  Observations = 1:7,
+  Volatility = "A")
+
+not_volatile_data <- data.frame(
+  Price = c(3, 5, 4, 7, 3, 5, 3),
+  Observations = 1:7,
+  Volatility = "B")
+combined_data <- rbind(volatile_data, not_volatile_data)
+
+# Plot data with different line colors
+plot <- ggplot(combined_data, aes(x = Observations, y = Price, color = Volatility, linetype = Volatility)) +
+  geom_line(size = 0.7) +
+  scale_color_manual(values = c("darkblue", "red")) +
+  labs(color = "Volatility", linetype = "Volatility") +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm"))
+
+# Ggplot object to Plotly
+plotly_plot <- ggplotly(plot)
+plotly_plot
+```
+
+In the above, **A** is a more volatile market than **B**. It can be said with a relative degree of certainty that at the next observation, the movement of market **A** will be more severe/uncertain/unpredictable than the corresponding movement of market **B**.
+
+Even if this is accepted blindly, it is more useful to ask why this matters in the first place. To answer that, consider who cares about **market uncertainty**.
+
+This is best illustrated through the commodity space: a major consumer of crude oil devotes a significant amount of attention and energy into the price of crude oil and as such, extreme volatility is a major issue to them. How do they combat it? They **hedge their risk**.
+
+Hedging is simply a measure of **buying coverage**. Risk managers in this space attempt to manage price risk and price uncertainty by purchasing coverage that protects their shareholders from price uncertainty.
+
+When markets are uncertain, we can imagine that there is very little separation in chance of a major decrease vs a major increase. Put more simply, if the price is initially X, it is just as likely that the price increases to 1.5*X as if it were to decrease to* 0.5X. Even though the purchaser would greatly benefit from a price decrease, the fear of a price increase is great enough to purchase some form of coverage that protects against a price increase. Consult below:
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+outcomes <- data.frame(Good = c(4,5,3,4,3,2,1,0),
+                       Okay = c(4,5,3,4,4,4,4,4),
+                       Bad = c(4,5,3,4,5,6,7,8),
+                       Observations = 1:8)
+outcomes <- reshape::melt(outcomes, id.vars = "Observations", variable.name = "series") %>% 
+  dplyr::mutate(Outcome = variable, Price = value)
+
+outcomes <- ggplot(outcomes, aes(Observations, Price)) +
+  geom_line(data = subset(outcomes, Observations<=4), linetype = 1) +
+  geom_line(data = subset(outcomes, Observations>=4), aes(color = Outcome), linetype = 5) +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm"))
+
+# Ggplot object to Plotly
+plotly_outcomes <- ggplotly(outcomes)
+plotly_outcomes
+```
+
+Therefore, if a market experiences increasing volatility, it follows that securities that provide coverage and lock in those Okay prices should increase in value a similar amount i.e.) they should match!
+
+The idea then is that this is something the market should **always** do. There should not be a case where a market becomes increasingly volatile and securities providing coverage for that uncertainty do not become more valuable, especially in a highly competitive and liquid market like crude oil. As such, if the match is not as it should be, there is a trading opportunity.
+
+This strategy involves creating long & short positions on securities that provide volatility coverage based on their movement as it pertains to observed volatility in the market.
+
+## Options and Volatility
+
+**Options derive their value from volatility.** Uncertainty, as discussed in the graph above, is what motivates large consumers with price risk to buy coverage. How does volatility affect the price of a simple call option?
+
+Let ***S*** equal the commodity price and ***X*** equal the strike price
+
+Imagine there is absolutely **no volatility** in the market whatsoever,
+
+-   No variation in S means that S~Today~ = S~Expiry~
+
+-   A call \@ X must have value **max(S~Today~ - X, 0**) at all times to avoid arbitrage opportunities
+
+-   In zero volatility environments, the price of any given option **must** be equal to its payoff
+
+Now, imagine there is **infinite volatility**,
+
+-   The range of possible stock prices in theory is **(-∞, ∞)**, meaning it could literally be equal to any possible digit.
+
+-   Every possible price is now equally likely to occur, which means S~Expiry~ is completely random
+
+-   That range is unimaginably vast and the variation is infinite, and based on what we've defined, does that mean the option value should be 0? Should it be infinite?
+
+    -   The argument for option value = 0
+
+        -   For every outcome, there must be an opposite outcome since the ranges are mirrored. Doesn't that mean the option has no value whatsoever?
+
+            -   **No**. We are in agreeance that the more volatile a market, the more valuable are options because they hedge risk. If stock price is currently \$40, but next week it could be \$-∞ or \$∞, **it's incredibly valuable to hedge your risk.** Remember, options derive their value from hedging risk, and large consumers don't really care that the price could potentially drop to \$-∞ because it could also potentially climb to \$∞, and that movement is just as likely as a movement to \$38 or \$42.
+
+    -   The argument for option value = ∞
+
+        -   Based on what we just defined, does it make sense then for an option in this situation to be infinitely valuable?
+
+            -   **No**. Remember than option prices are hedges based on the price of some underlying product. The example we gave relates to call options, giving the right to purchase the underlying for some predefined price. We just defined that the price must be greater than 0, but imagine if the underlying price is again \$40 and the goal is to purchase a call at strike price \$36.
+
+                -   Based on the work we've done so far, we know this option must be at least \$4 and the goal now is to define a maximum price. Imagine the opposite end of this price spectrum. What if the price for the option was \$37? We are dealing with infinite volatility after all! In this situation, we make profit off the purchase if S~Expiry~ \>= \$73. What if the price for the option was \$41, now we make a profit if S~Expiry~ \>= \$77 right? Wait a second... the consumer is trying to hedge their price risk aren't they? Why would they buy the right to buy at some price for more than the current price? They wouldn't
+
+                -   **This call option cannot be more than S~Today~, otherwise there will never be a market situation where purchasing it makes sense in this setting.**
+
+-   So, the range of our option price is defined as such:
+
+    -   **Call Option Price ∈ \[max(S~i~ - X, 0), S~i~\]**
+
+        -   In low volatility environments, price tends towards **max(S~i~ - X, 0)**
+
+        -   In high volatility environments, price tends towards **S~i~**
+
+With that, we understand why volatility gives options value and how we can use it to derive a trading strategy based on volatility. As mentioned, the goal is to observe volatility in crude oil markets and take advantage of high and low volatility moments to trade options and hopefully generate positive returns.
+
+## Visualizing The Idea
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+vals23F <- c(7250,7450,7650,7850,8050)
+opts23F <- c()
+for (i in 1:length(vals23F)){
+  opts23F <- c(opts23F, paste0("@LO23FC",vals23F[i]))
+}
+
+futs23F <- c("@CL23F")
+options23F <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+               contracts = opts23F,
+               from = "2022-12-01",
+               iuser = Morning_User,
+               ipassword = Morning_Password) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+futures23F <- RTL::getPrices(feed = "CME_NymexFutures_EOD",
+                          contracts = futs23F,
+                          from = "2022-12-01",
+                          iuser = Morning_User,
+                          ipassword = Morning_Password) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::filter(date <= "2022-12-15")
+og23F <- ggplot(options23F, aes(x = date, y = value, color = series)) +
+  geom_line() +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  labs(color = "Contracts") + 
+  theme(legend.text = element_text(size = 8))
+
+fg23F <- ggplot(futures23F, aes(x = date, y = value, color = series)) +
+  geom_line() +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  labs(color = "Contracts") + 
+  theme(legend.text = element_text(size = 8))
+
+vals23G <- c(7250,7450,7650,7850,8050)
+opts23G <- c()
+for (i in 1:length(vals23G)){
+  opts23G <- c(opts23G, paste0("@LO23GC",vals23G[i]))
+}
+
+futs23G <- c("@CL23G")
+options23G <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+               contracts = opts23G,
+               from = "2022-12-16",
+               iuser = Morning_User,
+               ipassword = Morning_Password) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+futures23G <- RTL::getPrices(feed = "CME_NymexFutures_EOD",
+                          contracts = futs23G,
+                          from = "2022-12-16",
+                          iuser = Morning_User,
+                          ipassword = Morning_Password) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::filter(date <= "2023-01-17")
+
+og23G <- ggplot(options23G, aes(x = date, y = value, color = series)) +
+  geom_line() +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  labs(color = "Contracts") + 
+  theme(legend.text = element_text(size = 8))
+
+fg23G <- ggplot(futures23G, aes(x = date, y = value, color = series)) +
+  geom_line() +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  labs(color = "Contracts") + 
+  theme(legend.text = element_text(size = 8))
+
+og23F_plotly <- ggplotly(og23F)
+fg23F_plotly <- ggplotly(fg23F)
+og23G_plotly <- ggplotly(og23G)
+fg23G_plotly <- ggplotly(fg23G)
+
+subplot(og23F_plotly, fg23F_plotly)
+subplot(og23G_plotly, fg23G_plotly)
+```
+
+## Retrieving Option Prices
+
+```{r, include=FALSE}
+
+# Pulling Options Prices 
+flat_crude <- RTL::eia2tidy(ticker = "PET.RWTC.D", 
+                key = EIAkey, 
+                name = "Crude") %>% 
+  dplyr::mutate(Year = year(date), 
+                Month = month(date)) 
+
+flat_crude$Year <- substring(flat_crude$Year, 3)
+
+flat_crude <- flat_crude %>% 
+  dplyr::mutate(Crude = round(Crude, 0)) %>%
+  mutate(month_name = case_when(
+    Month == "1" ~ "F",
+    Month == "2" ~ "G",
+    Month == "3" ~ "H",
+    Month == "4" ~ "J",
+    Month == "5" ~ "K",
+    Month == "6" ~ "M",
+    Month == "7" ~ "N",
+    Month == "8" ~ "Q",
+    Month == "9" ~ "U",
+    Month == "10" ~ "V",
+    Month == "11" ~ "X",
+    Month == "12" ~ "Z",
+    TRUE ~ NA_character_
+  )) %>% 
+  dplyr::mutate(Crude_adjusted = Crude) %>% 
+  # dplyr::mutate(Crude_adjusted = Crude + 5) %>% 
+  dplyr::mutate(seriescd5 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted-5, "00"),
+                seriescd4 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted-4, "00"),
+                seriescd3 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted-3, "00"),
+                seriescd2 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted-2, "00"),
+                seriescd1 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted-1, "00"),
+                seriesc0 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted, "00"),
+                seriescu1 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted+1, "00"),
+                seriescu2 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted+2, "00"),
+                seriescu3 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted+3, "00"),
+                seriescu4 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted+4, "00"),
+                seriescu5 = paste0("@", "LO", Year, month_name, "C", Crude_adjusted+5, "00"),
+                seriespd5 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted-5, "00"),
+                seriespd4 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted-4, "00"),
+                seriespd3 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted-3, "00"),
+                seriespd2 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted-2, "00"),
+                seriespd1 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted-1, "00"),
+                seriesp0 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted, "00"),
+                seriespu1 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted+1, "00"),
+                seriespu2 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted+2, "00"),
+                seriespu3 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted+3, "00"),
+                seriespu4 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted+4, "00"),
+                seriespu5 = paste0("@", "LO", Year, month_name, "P", Crude_adjusted+5, "00")) %>%
+  dplyr::filter(date >= "2023-01-01") 
+
+ids <- unique(data.frame(unlist(flat_crude[7:28]))) %>% 
+  dplyr::rename(id = unlist.flat_crude.7.28..)
+distinct_options <- as.vector(ids$id)
+
+options_full <- RTL::getPrices(feed = "CME_NymexOptions_EOD", 
+                               contracts = distinct_options,
+                               from = "2022-12-01",
+                               iuser = Morning_User,
+                               ipassword = Morning_Password) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+
+options_complete <- options_full %>% 
+  dplyr::mutate(Type = dplyr::case_when(str_detect(.$series, "C") == TRUE ~ "Call",
+                                        str_detect(.$series, "P") == TRUE ~ "Put"),
+                Strike = as.numeric(stringr::str_sub(.$series, start=7))/100,
+                Expiry = paste0("20", stringr::str_sub(.$series, start=3, end=5)),
+                Price = value,
+                Date = date) %>% 
+  na.omit()
+
+#Included as a sanity check. Originally, I took the last four values of the option ID to find strike, but if strike is 101.00, the result is actually 0100. It's been fixed above so the strikes are representative. 
+bins <- ggplot(options_complete, aes(x = Strike)) +
+  geom_bar(stat="count")
+ggplotly(bins)
+
+# The only issue is that we don't have prices till expiry for some reason. 
+```
+
+## Quantifying Volatility Using GARCH
+
+#### GARCH - Generalized AutoRegressive Conditional Heteroskedasticity
+
+Commodities and equities tend to showcase a behavior known as **volatility clustering**
+
+This means the volatility tends to change over time but its degrees tend to persist. For example there are times of **low volatility** and times of **high volatility**
+
+Therefore, we will be using GARCH to analyze volatility in crude prices.
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+# Initial Data Pull 
+crude <- RTL::eia2tidy(ticker = "PET.RWTC.D", 
+                key = EIAkey, 
+                name = "Crude") %>% 
+  na.omit()
+
+# Compute daily percentage returns 
+crude <- crude %>% 
+  dplyr::mutate("Percent" = as.numeric(Delt(crude$Crude) * 100)) %>% 
+  na.omit() 
+
+crude <- subset(crude, crude$date != "2020-04-20")
+crude <- subset(crude, crude$date != "2020-04-17")
+  
+
+# Percent Change Plot 
+crude_chart <- crude %>% 
+  ggplot(aes(x = date, 
+             y = Percent)) + 
+  geom_line(color = "steelblue") +
+  geom_hline(yintercept = 0, color = "black") +
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) 
+
+ggplotly(crude_chart)
+```
+
+The above series of daily % change in flat crude prices show that this is fluctuating randomly around zero, which means there is little autocorrelation
+
+The series of returns exhibits conditional heteroskedasticity since we observe volatility clustering. For some applications it is useful to measure and forecast these patterns. This can be done using models which assume that the volatility can be described by an autoregressive process. (Update)
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+acf(crude$Percent, main = "Crude Flat Price")
+```
+
+We can see from this that the autocorrelations are relatively weak. This means it is not optimal to use AR models for example to predict future outcomes.
+
+A weak autocorrelation in this data, means that the current value of crude is not highly correlated with its past values.
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+# Estimate GARCH(1,1) model of daily percentage change 
+
+GARCH_Crude <- garchFit(data = crude$Percent, trace = F)
+
+historical_vol = volatility(GARCH_Crude, type = "sigma")
+
+historical_vol <- data.frame(historical_vol)
+
+historical_vol$Date <- crude$date 
+
+historical_vol_graph <- historical_vol %>% 
+  ggplot(aes(x = Date, y = historical_vol)) + geom_line() + 
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  geom_line(color = "steelblue") + 
+  labs(y = "Volatility") +
+  theme(axis.title.x = element_text(margin = margin(t = 20)),
+        axis.title.y = element_text(margin = margin(r = 20)))
+
+historical_vol_graph <- ggplotly(historical_vol_graph)
+
+historical_vol_graph
+```
+
+Running this GARCH model we see that the t-values for omega (5.494), alpha1 (12.556), and beta1 (87.222) indicate that they are all highly significant.
+
+-   The p-values for all are less than 0.05.
+
+Using the GARCH model we are able to find the historical volatility, which is shown above.
+
+### Why Choose GARCH Over Standard Deviation?
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+crude_combined <- crude %>% 
+  mutate(rolling_sd = rollapply(Percent, 
+                                width = 22, 
+                                FUN = sd, 
+                                fill = NA, 
+                                align = "right")) %>% 
+  dplyr::select(date, rolling_sd) %>% 
+  dplyr::rename(Date = date)
+
+combined <- merge(historical_vol, crude_combined, all = TRUE)
+
+combined_chart <- ggplot(combined, aes(x = Date)) + 
+                  geom_line(aes(y = historical_vol), color = "Red") + 
+                  geom_line(aes(y = rolling_sd), color = "Blue")
+
+combined_chart <- ggplotly(combined_chart)
+```
+
+### Straight Out Volatility vs Directional Volatility
+
+While straight out volatility is important, in order to trade on this we need to look at directional volatility
+
+-   In other words which direction is volatility trending is more important than straight out volatility
+
+-   So for our trading strategies we will be focusing on how volatility changes rather than what volatility is
+
+This is shown from the GARCH volatility example below:
+
+```{r, echo=FALSE, fig.width = 10, fig.length = 4}
+historical_vol_updated <- historical_vol %>% 
+  dplyr::filter(Date >= "2007-05-01" & Date <= "2008-05-01")
+
+historical_vol_graph_updated <- historical_vol_updated %>% 
+  ggplot(aes(x = Date, y = historical_vol)) + geom_line() + 
+  theme(panel.background = element_rect(fill = "white"),
+        axis.title.y = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.line = element_line(color = "black"),
+        axis.ticks.length = unit(0.3, "cm"),
+        axis.ticks.x = element_line(color = "black"),
+        axis.ticks.y = element_line(color = "black"),
+        axis.ticks.length.y = unit(0.3, "cm")) + 
+  geom_line(color = "steelblue") + 
+  labs(y = "Volatility") +
+  theme(axis.title.x = element_text(margin = margin(t = 20)),
+        axis.title.y = element_text(margin = margin(r = 20)))
+
+historical_vol_graph_updated <- ggplotly(historical_vol_graph_updated)
+historical_vol_graph_updated
+```
+
+Here we see that being able to accurately predict which direction volatility moves in will end up making our strategy potentially profitable.
+
+## Backtesting The Strategy
+
+```{r, include=FALSE}
+# Computing Changes in Historical GARCH Vol and adding a rolling average 
+
+avg_width <- 27
+
+historical_vol <- historical_vol[, c(2, 1)]
+historical_vol <- arrange(historical_vol, Date) %>% 
+  dplyr::mutate(historical_vol_delta = (historical_vol / dplyr::lag(historical_vol) - 1) * 100) %>% 
+  na.omit() %>% 
+  mutate(rolling_vol_avg = rollapply(historical_vol_delta, 
+                                width = avg_width, 
+                                FUN = mean, 
+                                fill = NA, 
+                                align = "right")) %>% 
+  na.omit()
+
+# Computing Option returns by grouping by Strike, Type, and Price. 
+
+options_complete <- options_complete %>% dplyr::mutate(month_code = substring(Expiry, 5), 
+                                   Month = month(Date)) %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(Price_delta = Price / dplyr::lag(Price) - 1) %>% 
+  na.omit()
+
+# Combining Historical Vol with Options to get a full dataframe 
+
+combined <- merge(options_complete, historical_vol, all = FALSE) %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::filter(Price >= 3)
+
+# ------------------------------------------------------------------------------------------
+  
+# Indicators   
+historical_vol
+
+# Signals 
+withsignals <- combined %>% 
+  dplyr::mutate(signal = dplyr::case_when(rolling_vol_avg > 0 ~ 1, 
+                                          rolling_vol_avg < 0 ~ -1,
+                                          TRUE ~ 0)) %>% 
+  dplyr::group_by(series)
+# Trade 
+withtrade <- withsignals %>% 
+  dplyr::mutate(trade = tidyr::replace_na(dplyr::lag(signal) - dplyr::lag(signal, n=2L), 0))
+
+# Positions & PnL 
+withposition <- withtrade %>% 
+  dplyr::mutate(msr = cumsum(trade),
+                pos = tidyr::replace_na(dplyr::case_when(msr == 0 ~ 1,
+                                       msr == -2 ~ -1), 0), # PnL 
+                ret = pos * Price_delta ) %>% 
+  dplyr::mutate(pos = round(pos, 5), 
+                ret = round(ret, 5))
+
+# Compute Total PnL
+final <- withposition %>% 
+  dplyr::mutate(Cumeq = round(cumprod(1 + ret), 3)) %>% 
+  dplyr::arrange(desc(Date)) %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::slice(1) %>% 
+  dplyr::select(Date, Expiry, Strike, Type, Price, Cumeq)
+final_tbl <- final %>% 
+  head(16) %>% 
+  gt()
+gt_theme_espn(final_tbl)
+```
+
+## Optimization
+
+The strategy is optimized against the days upon which the rolling average volatility for WTI crude flat price is calculated. Industry research suggested that to accurately capture volatility trends, the best amount of days to use in that calculation should be between **5** and **22**
+
+As such, we initially performed an optimization using values for Days between **6** and **26** in steps of **4**
+
+```{r}
+optimizations1 <- gt(data.frame(Days = c(6,10,14,18,22,26),
+                             Mean = c(1.10608, 1.25231, 3.71730, 2.15221, 0.80333, 1.25313),
+                             Median = c(0.98083, 0.70175, 0.83120, 1.00051, 0.62716, 0.97982),
+                             `St Dev` = c(0.86577, 1.56371, 7.63452, 3.15555, 0.86021, 1.04901),
+                             Max = c(10.59379, 9.88686, 66.20834, 23.16554, 9.93930, 7.69737),
+                             Min = c(-1.20826, -1.67271, -6.86628, -9.93500, -1.37875, -0.02287)))
+gtExtras::gt_theme_espn(optimizations1)
+```
+
+Optimizing for risk, we restricted the range further from **22** to **28** in steps of **1**
+
+```{r}
+optimizations2 <- data.frame(Days = c(22,23,24,25,26,27,28),
+                                Mean = c(0.80333, 1.11204, 1.22048, 1.25678, 1.25313, 1.44042, 1.28716),
+                                Median = c(0.62716, 0.93424, 1.05526, 1.05827, 0.97982, 1.08769, 1.02812),
+                                `St Dev` = c(0.86021, 1.08568, 1.09391, 1.09605, 1.04901, 1.35442, 1.07170),
+                                Max = c(9.93930, 13.92989, 10.81957, 10.03833, 7.69737, 11.27692, 9.93129),
+                                Min = c(-1.37875, -0.00049, -0.70445, -0.09739, -0.02287, -0.00039, -0.00482))
+gtExtras::gt_theme_espn(gt(optimizations2))
+```
+
+Based on these optimization results, we selected **27** as the Days to use in our rolling average volatility calculation. We maximize the mean and the median of returns, but still stay within the realm of relative reality.
+
+## Quantifying Risk
+
+```{r}
+opt2graph <- plot_ly(data = optimizations2,
+                     x =~ Days,
+                     y =~ Mean)
+```
+
+## Conclusions
+
+This is not designed to be exhaustive nor comprehensive. Our goal is to define the foundations of volatility, explore methods of trading volatility, and demonstrate the complexity of an example strategy. In our research, it is clear that the most difficult aspect to volatility trading lies in theory. Any strategy that you create needs to have a strong supports in theoretical finance.
+
+## Reflection & Moving Beyond
